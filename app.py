@@ -28,6 +28,14 @@ def load_model():
 def index():
     return render_template_string(UI_HTML)
 
+@app.route('/api/voices')
+def list_voices():
+    """List all available voices"""
+    from huggingface_hub import list_repo_files
+    files = list_repo_files(VOICE_REPO)
+    voices = sorted([f.replace('.1e68beda@240.safetensors', '') for f in files if f.endswith('.safetensors')])
+    return jsonify({'voices': voices})
+
 @app.route('/health')
 def health():
     return jsonify({'status': 'ok', 'gpu': torch.cuda.is_available()})
@@ -135,6 +143,9 @@ button:disabled{background:#444;cursor:not-allowed}
 audio{width:100%;margin-top:15px}
 .gpu-info{display:flex;justify-content:space-between;align-items:center;padding:15px;background:#2a2a2a;border-radius:6px;margin-bottom:20px}
 .lang-switch{position:absolute;top:20px;right:20px}
+.param-grid{display:grid;grid-template-columns:1fr 1fr;gap:15px}
+@media(max-width:768px){.param-grid{grid-template-columns:1fr}}
+.voice-filter{margin-bottom:10px}
 </style>
 </head><body>
 <select class="lang-switch" onchange="switchLang(this.value)">
@@ -142,7 +153,7 @@ audio{width:100%;margin-top:15px}
 <option value="zh-CN">简体中文</option>
 </select>
 <div class="container">
-<h1 data-i18n="title">Kyutai TTS</h1>
+<h1 data-i18n="title">Kyutai TTS - GPU Resident</h1>
 <div class="gpu-info">
 <span data-i18n="gpu_status">GPU Status: <span id="gpu-status">Loading...</span></span>
 <button onclick="offloadGPU()" data-i18n="offload_gpu">Release GPU</button>
@@ -150,25 +161,35 @@ audio{width:100%;margin-top:15px}
 <div class="card">
 <div class="form-group">
 <label data-i18n="text_label">Text to Synthesize</label>
-<textarea id="text" placeholder="Enter text here..."></textarea>
+<textarea id="text" placeholder="Enter text here...">Hello, this is a test of the Kyutai text-to-speech system.</textarea>
 </div>
 <div class="form-group">
-<label data-i18n="voice_label">Voice</label>
-<input id="voice" value="expresso/ex03-ex01_happy_001_channel1_334s.wav">
+<label data-i18n="voice_label">Voice (400+ options)</label>
+<input type="text" id="voice-filter" class="voice-filter" placeholder="Filter voices..." onkeyup="filterVoices()">
+<select id="voice" size="8">
+<option value="">Loading voices...</option>
+</select>
 </div>
+<div class="param-grid">
 <div class="form-group">
 <label>CFG Coefficient (1.0-3.0)</label>
 <input type="number" id="cfg" value="2.0" min="1" max="3" step="0.1">
 </div>
-<button onclick="generate()" id="btn" data-i18n="generate">Generate</button>
+<div class="form-group">
+<label>Temperature (0.1-1.0)</label>
+<input type="number" id="temp" value="0.6" min="0.1" max="1.0" step="0.1">
+</div>
+</div>
+<button onclick="generate()" id="btn" data-i18n="generate">Generate Speech</button>
 <div id="status"></div>
 <audio id="audio" controls style="display:none"></audio>
 </div>
 </div>
 <script>
+let allVoices=[];
 const i18n={
-en:{title:"Kyutai TTS",gpu_status:"GPU Status: ",offload_gpu:"Release GPU",text_label:"Text to Synthesize",voice_label:"Voice",generate:"Generate"},
-"zh-CN":{title:"Kyutai 语音合成",gpu_status:"GPU 状态: ",offload_gpu:"释放显存",text_label:"输入文本",voice_label:"音色",generate:"生成语音"}
+en:{title:"Kyutai TTS - GPU Resident",gpu_status:"GPU Status: ",offload_gpu:"Release GPU",text_label:"Text to Synthesize",voice_label:"Voice (400+ options)",generate:"Generate Speech"},
+"zh-CN":{title:"Kyutai 语音合成 - 显存常驻",gpu_status:"GPU 状态: ",offload_gpu:"释放显存",text_label:"输入文本",voice_label:"音色 (400+ 选项)",generate:"生成语音"}
 };
 function switchLang(lang){
 document.querySelectorAll('[data-i18n]').forEach(el=>{
@@ -176,9 +197,38 @@ const key=el.getAttribute('data-i18n');
 if(i18n[lang][key])el.textContent=i18n[lang][key];
 });
 }
+async function loadVoices(){
+const res=await fetch('/api/voices');
+const data=await res.json();
+allVoices=data.voices;
+const select=document.getElementById('voice');
+select.innerHTML='';
+allVoices.forEach(v=>{
+const opt=document.createElement('option');
+opt.value=v;
+opt.textContent=v;
+if(v==='expresso/ex03-ex01_happy_001_channel1_334s.wav')opt.selected=true;
+select.appendChild(opt);
+});
+}
+function filterVoices(){
+const filter=document.getElementById('voice-filter').value.toLowerCase();
+const select=document.getElementById('voice');
+const selected=select.value;
+select.innerHTML='';
+allVoices.filter(v=>v.toLowerCase().includes(filter)).forEach(v=>{
+const opt=document.createElement('option');
+opt.value=v;
+opt.textContent=v;
+if(v===selected)opt.selected=true;
+select.appendChild(opt);
+});
+}
 async function generate(){
 const text=document.getElementById('text').value;
+const voice=document.getElementById('voice').value;
 if(!text){alert('Please enter text');return}
+if(!voice){alert('Please select a voice');return}
 const btn=document.getElementById('btn');
 const status=document.getElementById('status');
 btn.disabled=true;
@@ -186,7 +236,7 @@ status.className='status';
 status.textContent='Generating...';
 const formData=new FormData();
 formData.append('text',text);
-formData.append('voice',document.getElementById('voice').value);
+formData.append('voice',voice);
 formData.append('cfg_coef',document.getElementById('cfg').value);
 try{
 const res=await fetch('/api/tts',{method:'POST',body:formData});
@@ -198,10 +248,10 @@ audio.src=url;
 audio.style.display='block';
 audio.play();
 status.className='status success';
-status.textContent='Generated successfully!';
+status.textContent='✅ Generated successfully!';
 }catch(e){
 status.className='status error';
-status.textContent='Error: '+e.message;
+status.textContent='❌ Error: '+e.message;
 }finally{
 btn.disabled=false;
 }
@@ -213,8 +263,9 @@ updateGPUStatus();
 async function updateGPUStatus(){
 const res=await fetch('/api/gpu/status');
 const data=await res.json();
-document.getElementById('gpu-status').textContent=data.loaded?`Loaded (${data.memory_used_gb}GB/${data.memory_total_gb}GB)`:'Idle';
+document.getElementById('gpu-status').textContent=data.loaded?`✅ Loaded (${data.memory_used_gb}GB/${data.memory_total_gb}GB)`:'⚪ Idle';
 }
+loadVoices();
 updateGPUStatus();
 setInterval(updateGPUStatus,5000);
 </script>
